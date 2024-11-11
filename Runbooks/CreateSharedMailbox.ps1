@@ -14,7 +14,7 @@ if ($WebhookData) {
     else
     {
         Write-Output "Header missing required information";
-        #exit;
+        exit;
     }
 
     Write-Output "Convert Header";
