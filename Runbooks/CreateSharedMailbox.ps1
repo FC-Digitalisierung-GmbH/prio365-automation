@@ -43,7 +43,8 @@ if ($WebhookData) {
         $sharedMailboxAlias = $mailboxCreationAction.sharedMailboxAlias
         #create smb
         New-Mailbox -Shared -DisplayName $sharedMailboxDisplayname -Name $sharedMailboxName -Alias $sharedMailboxAlias -PrimarySmtpAddress $sharedMailboxPrimarysmtp -ResetPasswordOnNextLogon $false
-	    Set-MailboxRegionalConfiguration -Identity $sharedMailboxPrimarysmtp -Language 1031 -TimeZone "W. Europe Standard Time" -DateFormat "dd.MM.yyyy" -TimeFormat "HH:mm"
+	Start-Sleep -Seconds 60
+	Set-MailboxRegionalConfiguration -Identity $sharedMailboxPrimarysmtp -Language 1031 -TimeZone "W. Europe Standard Time" -DateFormat "dd.MM.yyyy" -TimeFormat "HH:mm"
     }
 }
 else {    
