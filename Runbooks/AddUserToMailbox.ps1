@@ -5,44 +5,55 @@ param
 )
 
 if ($WebhookData) {
-
-    # Check header for message to validate request
-    if ($WebhookData.RequestHeader.message -eq 'StartedByPrio365')
+    # Retrieve variables from webhook request body
+    $WebhookBody = ConvertFrom-Json -InputObject $WebhookData.RequestBody
+    
+    # Extract the webhook secret for authentication
+    $WebhookSecret = $WebhookBody.WebhookSecret
+    
+    # Check header for secret to validate request
+    if ($WebhookData.RequestHeader.message -eq $WebhookSecret)
     {
-        Write-Output "Header has required information"}
+        Write-Output "Request authenticated successfully"
+    }
     else
     {
-        Write-Output "Header missing required information";
-        exit;
+        Write-Output "Authentication failed - invalid secret"
+        exit
     }
-
-    # Retrieve variables from webhook request body
-    $WebhookBody =  (ConvertFrom-Json -InputObject $WebhookData.RequestBody)        
     
-    # Retrieve variables from webhook request body
-    $mailboxUserActions = $WebhookBody
+    # Extract the customer domain from parameters
+    $tenant = $WebhookBody.CustomerDomain
     
-    # Connect to exchange online#connect to exchange
-
-    #deprecated
-    #$connection = Get-AutomationConnection –Name AzureRunAsConnection
+    # Get the array of mailbox actions to perform
+    # Remove WebhookSecret and CustomerDomain from the body to avoid processing them in the loop
+    $cleanBody = $WebhookBody | Select-Object -Property * -ExcludeProperty WebhookSecret, CustomerDomain
+    
+    # Connect to exchange online
     Connect-AzAccount -Identity
-    $tenant = 'DOMAIN.onmicrosoft.com'
-
-    #deprecated 
-    #Connect-ExchangeOnline –CertificateThumbprint $connection.CertificateThumbprint –AppId $connection.ApplicationID –ShowBanner:$false –Organization $tenant
+    
+    Write-Output "Connecting to tenant: $tenant"
+    
+    # Connect to Exchange Online with managed identity
     Connect-ExchangeOnline -ManagedIdentity -Organization $tenant
-    foreach ($mailboxUserAction in $mailboxUserActions) {
+    
+    # Process each mailbox user action
+    foreach ($mailboxUserAction in $cleanBody) {
         $sharedMailboxPrimarysmtp = $mailboxUserAction.sharedMailboxPrimarySmtp
         $mailboxUser = $mailboxUserAction.mailboxUser
-        Write-Output "Add user $($mailboxUser) to shared mailbox $($sharedMailboxPrimarysmtp)"
-        #add user from smb
+        
+        Write-Output "Adding user $($mailboxUser) to shared mailbox $($sharedMailboxPrimarysmtp)"
+        
+        # Add user permissions to the shared mailbox
         Add-MailboxPermission -Identity $sharedMailboxPrimarysmtp -AccessRights FullAccess -User $mailboxUser -AutoMapping $false -InheritanceType All -Confirm:$false 
         Add-RecipientPermission -Identity $sharedMailboxPrimarysmtp -AccessRights SendAs -Confirm:$false -Trustee $mailboxUser
-   }
-
-   Disconnect-ExchangeOnline -Confirm:$false
+    }
+    
+    # Disconnect from Exchange Online
+    Disconnect-ExchangeOnline -Confirm:$false
+    
+    Write-Output "Successfully added user permissions to shared mailboxes"
 }
 else {    
-    write-Error "Only webhooks allowed."
+    Write-Error "Only webhooks allowed."
 }
