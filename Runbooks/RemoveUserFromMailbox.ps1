@@ -3,52 +3,57 @@ param
     [Parameter (Mandatory = $false)]
     [object] $WebhookData
 )
-
-# If runbook was called from webhook, WebhookData will not be null.
 if ($WebhookData) {
-
-    # Check header for message to validate request
-    if ($WebhookData.RequestHeader.message -eq 'StartedByPrio365')
+    # Retrieve variables from webhook request body
+    $WebhookBody = ConvertFrom-Json -InputObject $WebhookData.RequestBody
+    
+    # Extract the webhook secret for authentication
+    $WebhookSecret = $WebhookBody.WebhookSecret
+    
+    # Check header for secret to validate request
+    if ($WebhookData.RequestHeader.message -eq $WebhookSecret)
     {
-        Write-Output "Header has required information"}
+        Write-Output "Request authenticated successfully"
+    }
     else
     {
-        Write-Output "Header missing required information";
-        exit;
+        Write-Output "Authentication failed - invalid secret"
+        exit
     }
-
-    Write-Output "Convert Header";
-    # Retrieve variables from webhook request body
-    $WebhookBody =  (ConvertFrom-Json -InputObject $WebhookData.RequestBody)    
     
-    # Retrieve variables from webhook request body
-    $mailboxUserActions = $WebhookBody
+    # Extract the customer domain from parameters
+    $tenant = $WebhookBody.CustomerDomain
     
-    # Connect to exchange online#connect to exchange
-
-    #deprecated
-    #$connection = Get-AutomationConnection –Name AzureRunAsConnection
+    # Get the array of mailbox actions to perform
+    # Remove WebhookSecret and CustomerDomain from the body to avoid processing them in the loop
+    $mailboxUserActions = $WebhookBody | Select-Object -Property * -ExcludeProperty WebhookSecret, CustomerDomain
+    
+    # Connect to exchange online
     Connect-AzAccount -Identity
-    $tenant = 'DOMAIN.onmicrosoft.com'
-
-    #deprecated 
-    #Connect-ExchangeOnline –CertificateThumbprint $connection.CertificateThumbprint –AppId $connection.ApplicationID –ShowBanner:$false –Organization $tenant
+    
+    Write-Output "Connecting to tenant: $tenant"
+    
+    # Connect to Exchange Online with managed identity
     Connect-ExchangeOnline -ManagedIdentity -Organization $tenant
+    
     Write-Output "mailboxUserActions: $($mailboxUserActions.count)"
     
     foreach ($mailboxUserAction in $mailboxUserActions) {
         $sharedMailboxPrimarysmtp = $mailboxUserAction.sharedMailboxPrimarySmtp
         $mailboxUser = $mailboxUserAction.mailboxUser
         
-        #add user from smb
+        Write-Output "Removing user $($mailboxUser) from shared mailbox $($sharedMailboxPrimarysmtp)"
+        
+        # Remove user permissions from the shared mailbox
         Remove-MailboxPermission -Identity $sharedMailboxPrimarysmtp -AccessRights FullAccess -Confirm:$false -User $mailboxUser
         Remove-RecipientPermission -Identity $sharedMailboxPrimarysmtp -AccessRights SendAs -Confirm:$false -Trustee $mailboxUser
-   }
-
-    Disconnect-ExchangeOnline -Confirm:$false   
+    }
+    
+    # Disconnect from Exchange Online
+    Disconnect-ExchangeOnline -Confirm:$false
+    
+    Write-Output "Successfully removed user permissions from shared mailboxes"
 }
 else {    
-    write-Error "Only webhooks allowed."
+    Write-Error "Only webhooks allowed."
 }
-
-
