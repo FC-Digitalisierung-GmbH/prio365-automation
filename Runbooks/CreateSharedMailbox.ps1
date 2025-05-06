@@ -1,14 +1,13 @@
 param
 (
     [Parameter (Mandatory = $false)]
-    [object] $WebhookData
+    [object] $WebhookData,
+    [object] $WebhookSecret,
+    [object] $CustomerDomain
 )
 if ($WebhookData) {
     # Retrieve variables from webhook request body
     $WebhookBody = ConvertFrom-Json -InputObject $WebhookData.RequestBody
-    
-    # Extract the webhook secret for authentication
-    $WebhookSecret = $WebhookBody.WebhookSecret
     
     # Check header for secret to validate request
     if ($WebhookData.RequestHeader.message -eq $WebhookSecret)
@@ -22,7 +21,7 @@ if ($WebhookData) {
     }
     
     # Extract the customer domain from parameters
-    $tenant = $WebhookBody.CustomerDomain
+    $tenant = $CustomerDomain
     
     # Get the array of mailbox creation actions to perform
     # Remove WebhookSecret and CustomerDomain from the body to avoid processing them in the loop
