@@ -164,6 +164,7 @@ $githubUrls = @{
     "AddUserToMailbox" = "https://raw.githubusercontent.com/FC-Digitalisierung-GmbH/prio365-automation/main/Runbooks/AddUserToMailbox.ps1"
     "CreateSharedMailbox" = "https://raw.githubusercontent.com/FC-Digitalisierung-GmbH/prio365-automation/main/Runbooks/CreateSharedMailbox.ps1"
     "RemoveUserFromMailbox" = "https://raw.githubusercontent.com/FC-Digitalisierung-GmbH/prio365-automation/main/Runbooks/RemoveUserFromMailbox.ps1"
+    "Manage-AppMailboxAccess" = "https://raw.githubusercontent.com/FC-Digitalisierung-GmbH/prio365-automation/main/Runbooks/Manage-AppMailboxAccess.ps1"
 }
 
 # Create and import each runbook
@@ -180,6 +181,13 @@ foreach ($runbookName in $githubUrls.Keys) {
 foreach ($runbookName in $githubUrls.Keys) {
     Create-Webhook -RunbookName $runbookName -ResourceGroupName $rgName -AutomationAccountName $accountName
 }
+
+# Setup-Prio365MailboxScope: ARM-Job-invoked (KEIN Webhook) -> nur importieren + publizieren
+$setupRunbookName = "Setup-Prio365MailboxScope"
+$setupRunbookUrl  = "https://raw.githubusercontent.com/FC-Digitalisierung-GmbH/prio365-automation/main/Runbooks/Setup-Prio365MailboxScope.ps1"
+Create-Runbook -RunbookName $setupRunbookName -ResourceGroupName $rgName -AutomationAccountName $accountName -GitHubUrl $setupRunbookUrl
+Publish-AzAutomationRunbook -ResourceGroupName $rgName -AutomationAccountName $accountName -Name $setupRunbookName
+Write-Output "Setup-Prio365MailboxScope importiert & publiziert (ARM-Job-invoked, kein Webhook)."
 
 # Output the webhook URLs and secret
 Write-Output "Webhooks created successfully - Secret $secret."
