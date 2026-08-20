@@ -1,7 +1,6 @@
 param
 (
-    [Parameter(Mandatory = $true)]  [string] $SpAppId,
-    [Parameter(Mandatory = $true)]  [string] $SpObjectId,
+    [Parameter(Mandatory = $true)]  [string] $ServicePrincipalsJson,
     [Parameter(Mandatory = $true)]  [string] $OrganizationDomain,
     [Parameter(Mandatory = $false)] [string] $VerifyInScopeMailbox,
     [Parameter(Mandatory = $false)] [string] $VerifyOutOfScopeMailbox
@@ -27,10 +26,12 @@ function Confirm-ScopeGroup {
 }
 
 function Confirm-ExoServicePrincipal {
-    param([Parameter(Mandatory)][string]$AppId, [Parameter(Mandatory)][string]$ObjectId)
-    if (-not (Get-ServicePrincipal -Identity $AppId -ErrorAction SilentlyContinue)) {
-        New-ServicePrincipal -AppId $AppId -ObjectId $ObjectId -DisplayName 'prio365-sp' -ErrorAction Stop | Out-Null
+    param([Parameter(Mandatory)][string]$AppId, [Parameter(Mandatory)][string]$ObjectId, [Parameter(Mandatory)][string]$DisplayName)
+    $sp = Get-ServicePrincipal -Identity $AppId -ErrorAction SilentlyContinue
+    if (-not $sp) {
+        $sp = New-ServicePrincipal -AppId $AppId -ObjectId $ObjectId -DisplayName $DisplayName -ErrorAction Stop
     }
+    return $sp.Identity
 }
 
 function Confirm-ManagementScope {
@@ -43,17 +44,28 @@ function Confirm-ManagementScope {
 function Confirm-RoleAssignments {
     param(
         [Parameter(Mandatory)][string]$AppId,
+        [Parameter(Mandatory)][string]$SpIdentity,
         [Parameter(Mandatory)][string]$ScopeName,
         [Parameter(Mandatory)][string[]]$Roles
     )
-    $spId = (Get-ServicePrincipal -Identity $AppId -ErrorAction Stop).Identity
     $existing = Get-ManagementRoleAssignment -RoleAssignee $AppId -ErrorAction SilentlyContinue |
                 Where-Object { $_.CustomResourceScope -eq $ScopeName }
     foreach ($role in $Roles) {
         if (-not ($existing | Where-Object { $_.Role -eq $role })) {
-            New-ManagementRoleAssignment -App $spId -Role $role -CustomResourceScope $ScopeName -ErrorAction Stop | Out-Null
-            Write-Output "  + RoleAssignment: $role"
+            New-ManagementRoleAssignment -App $SpIdentity -Role $role -CustomResourceScope $ScopeName -ErrorAction Stop | Out-Null
+            Write-Output "  + [$AppId] RoleAssignment: $role"
         }
+    }
+}
+
+function Invoke-SetupForServicePrincipals {
+    param([Parameter(Mandatory)][object[]]$ServicePrincipals, [Parameter(Mandatory)][object]$Group,
+          [Parameter(Mandatory)][string]$ScopeName, [Parameter(Mandatory)][string[]]$Roles)
+    $i = 0
+    foreach ($sp in $ServicePrincipals) {
+        $i++
+        $identity = Confirm-ExoServicePrincipal -AppId $sp.AppId -ObjectId $sp.ObjectId -DisplayName "prio365-sp-$i"
+        Confirm-RoleAssignments -AppId $sp.AppId -SpIdentity $identity -ScopeName $ScopeName -Roles $Roles
     }
 }
 
@@ -73,23 +85,22 @@ function Test-ScopeGate {
 function Invoke-Main {
     Connect-AzAccount -Identity | Out-Null
     Connect-ExchangeOnline -ManagedIdentity -Organization $OrganizationDomain
-
     try {
+        $sps   = ConvertFrom-Json -InputObject $ServicePrincipalsJson
         $group = Confirm-ScopeGroup -Name $ScopeGroupName -Alias $ScopeGroupAlias
-        Confirm-ExoServicePrincipal -AppId $SpAppId -ObjectId $SpObjectId
         Confirm-ManagementScope -Name $ScopeName -GroupDn $group.DistinguishedName
-        Confirm-RoleAssignments -AppId $SpAppId -ScopeName $ScopeName -Roles $Roles
+        Invoke-SetupForServicePrincipals -ServicePrincipals @($sps) -Group $group -ScopeName $ScopeName -Roles $Roles
 
         $ready = $true
         if ($VerifyInScopeMailbox -and $VerifyOutOfScopeMailbox) {
-            $ready = Test-ScopeGate -AppId $SpAppId -InScopeMailbox $VerifyInScopeMailbox -OutOfScopeMailbox $VerifyOutOfScopeMailbox
+            foreach ($sp in @($sps)) {
+                if (-not (Test-ScopeGate -AppId $sp.AppId -InScopeMailbox $VerifyInScopeMailbox -OutOfScopeMailbox $VerifyOutOfScopeMailbox)) { $ready = $false }
+            }
         }
         Write-Output "ScopeGroupEmail=$($group.PrimarySmtpAddress)"
         Write-Output "SCOPE_READY=$($ready.ToString().ToLower())"
     }
-    finally {
-        Disconnect-ExchangeOnline -Confirm:$false
-    }
+    finally { Disconnect-ExchangeOnline -Confirm:$false }
 }
 
 # Guard: bei Pester-Dot-Source (InvocationName '.') NICHT ausführen

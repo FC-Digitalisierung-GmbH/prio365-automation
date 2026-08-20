@@ -34,20 +34,36 @@ Describe 'Confirm-ScopeGroup' {
 
 Describe 'Confirm-RoleAssignments' {
     It 'legt genau die fehlenden gescopten RoleAssignments an' {
-        Mock Get-ServicePrincipal { [pscustomobject]@{ Identity = 'spId-1' } }
         Mock Get-ManagementRoleAssignment { @() }   # nichts vorhanden
         Mock New-ManagementRoleAssignment { }
-        Confirm-RoleAssignments -AppId 'app1' -ScopeName 'Prio365-MailboxScope' -Roles $script:Roles
+        Confirm-RoleAssignments -AppId 'app1' -SpIdentity 'spId-1' -ScopeName 'Prio365-MailboxScope' -Roles $script:Roles
         Should -Invoke New-ManagementRoleAssignment -Times 4 -Exactly
     }
     It 'ist idempotent, wenn alle RoleAssignments existieren' {
-        Mock Get-ServicePrincipal { [pscustomobject]@{ Identity = 'spId-1' } }
         Mock Get-ManagementRoleAssignment {
             $script:Roles | ForEach-Object { [pscustomobject]@{ Role = $_; CustomResourceScope = 'Prio365-MailboxScope' } }
         }
         Mock New-ManagementRoleAssignment { }
-        Confirm-RoleAssignments -AppId 'app1' -ScopeName 'Prio365-MailboxScope' -Roles $script:Roles
+        Confirm-RoleAssignments -AppId 'app1' -SpIdentity 'spId-1' -ScopeName 'Prio365-MailboxScope' -Roles $script:Roles
         Should -Invoke New-ManagementRoleAssignment -Times 0 -Exactly
+    }
+}
+
+Describe 'Invoke-SetupForServicePrincipals' {
+    It 'legt SP + RoleAssignments für JEDEN SP an' {
+        Mock Get-DistributionGroup { [pscustomobject]@{ PrimarySmtpAddress='g@x.de'; DistinguishedName='CN=g' } }
+        Mock Get-ManagementScope { $true }
+        Mock Get-ServicePrincipal { $null }           # keiner existiert
+        Mock New-ServicePrincipal { }
+        Mock Get-ManagementRoleAssignment { @() }
+        Mock New-ManagementRoleAssignment { }
+        $sps = @(
+            [pscustomobject]@{ AppId='a1'; ObjectId='o1' },
+            [pscustomobject]@{ AppId='a2'; ObjectId='o2' }
+        )
+        Invoke-SetupForServicePrincipals -ServicePrincipals $sps -Group ([pscustomobject]@{ DistinguishedName='CN=g' }) -ScopeName 'Prio365-MailboxScope' -Roles @('Application Mail.ReadWrite')
+        Should -Invoke New-ServicePrincipal -Times 2 -Exactly            # 2 SPs
+        Should -Invoke New-ManagementRoleAssignment -Times 2 -Exactly    # 1 Rolle × 2 SPs
     }
 }
 
