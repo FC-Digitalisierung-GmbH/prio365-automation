@@ -19,6 +19,9 @@ if ($WebhookData) {
         Write-Output "Authentication failed - invalid secret"
         exit
     }
+
+    Get-Command Connect-ExchangeOnline -All |
+      Format-List Name, CommandType, Source, ModuleName, Version    
     
     # Extract the customer domain from parameters
     $tenant = $CustomerDomain
