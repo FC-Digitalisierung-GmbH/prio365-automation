@@ -6,6 +6,10 @@ param
     [object] $CustomerDomain
 )
 
+Get-Command Connect-ExchangeOnline -All |
+  Format-List Name, CommandType, Source, ModuleName, Version
+
+
 $ScopeGroupIdentity = 'Prio365-MailboxScope'
 
 function Set-MailboxScopeMembership {
