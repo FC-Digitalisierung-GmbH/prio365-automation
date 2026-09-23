@@ -104,20 +104,21 @@ function Invoke-Main {
         $exoCmd = Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue
         Write-Output "STEP: ExchangeOnlineManagement module = $($exoCmd.Source) v$($exoCmd.Version)"
 
-        # Connect mit Retry: die Exchange-Administrator-Rolle der Managed Identity kann nach dem
-        # Deployment noch nicht propagiert sein -> ein paar Versuche mit Backoff, bevor wir aufgeben.
-        $connected = $false
-        for ($attempt = 1; $attempt -le 5 -and -not $connected; $attempt++) {
-            try {
-                Connect-ExchangeOnline -ManagedIdentity -Organization $OrganizationDomain -ShowBanner:$false
-                $connected = $true
-            }
-            catch {
-                Write-Output "STEP: ExchangeOnline connect attempt $attempt failed: $($_.Exception.Message)"
-                if ($attempt -ge 5) { throw }
-                Start-Sleep -Seconds 20
-            }
+        # Diagnose des mutmaßlichen Az.Accounts-5.x-Breaking-Changes (Get-AzAccessToken -> SecureString),
+        # der Connect-ExchangeOnline -ManagedIdentity mit einer NRE brechen lässt.
+        $azAcc = Get-Module Az.Accounts -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
+        Write-Output "STEP: Az.Accounts v$($azAcc.Version)"
+        try {
+            $diagTok = Get-AzAccessToken -ResourceUrl 'https://outlook.office365.com' -ErrorAction Stop
+            Write-Output "STEP: Get-AzAccessToken ok, Token-Typ = $($diagTok.Token.GetType().Name)"
         }
+        catch {
+            Write-Output "STEP: Get-AzAccessToken failed: $($_.Exception.Message)"
+        }
+
+        # Fail-fast: ein Versuch. Der Fehler wird vom äußeren catch mit Typ/InnerException geloggt,
+        # der Job endet sofort auf Failed (kein minutenlanges Retry, das den Backend-Timeout reißt).
+        Connect-ExchangeOnline -ManagedIdentity -Organization $OrganizationDomain -ShowBanner:$false
         Write-Output "STEP: ExchangeOnline connected (org=$OrganizationDomain)"
 
         $sps = ConvertFrom-Json -InputObject $ServicePrincipalsJson
