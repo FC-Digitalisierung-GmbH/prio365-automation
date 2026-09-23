@@ -6,6 +6,8 @@ param
     [Parameter(Mandatory = $false)] [string] $VerifyOutOfScopeMailbox
 )
 
+$ErrorActionPreference = 'Stop'
+
 $ScopeGroupName  = 'Prio365-MailboxScope'
 $ScopeGroupAlias = 'prio365-mailboxscope'
 $ScopeName       = 'Prio365-MailboxScope'
@@ -17,10 +19,21 @@ $Roles = @(
 function Confirm-ScopeGroup {
     param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Alias)
     $existing = Get-DistributionGroup -Identity $Name -ErrorAction SilentlyContinue
+    if ($existing) { return $existing }
+
+    # Neu anlegen: das ZURÜCKGEGEBENE Objekt direkt verwenden (hat DistinguishedName sofort) –
+    # nicht auf ein erneutes Get verlassen, das wegen Exchange-Replikation kurz null liefern kann
+    # (genau das führte in den Folgeschritten zu null-Referenzen).
+    $created = New-DistributionGroup -Name $Name -Alias $Alias -Type Security -ErrorAction Stop
+    if ($created) { return $created }
+
+    # Fallback, falls New- ausnahmsweise nichts zurückgibt: kurz auf Replikation warten und erneut lesen.
+    for ($i = 0; $i -lt 6 -and -not $existing; $i++) {
+        Start-Sleep -Seconds 10
+        $existing = Get-DistributionGroup -Identity $Name -ErrorAction SilentlyContinue
+    }
     if (-not $existing) {
-        New-DistributionGroup -Name $Name -Alias $Alias -Type Security -ErrorAction Stop | Out-Null
-        Start-Sleep -Seconds 5
-        $existing = Get-DistributionGroup -Identity $Name -ErrorAction Stop
+        throw "Scope-Gruppe '$Name' ist nach der Erstellung nicht auffindbar (Exchange-Replikationsverzögerung)."
     }
     return $existing
 }
@@ -64,7 +77,7 @@ function Invoke-SetupForServicePrincipals {
     $i = 0
     foreach ($sp in $ServicePrincipals) {
         $i++
-        $identity = Confirm-ExoServicePrincipal -AppId $sp.AppId -ObjectId $sp.ObjectId -DisplayName "prio365-sp-$i"
+        $identity = Confirm-ExoServicePrincipal -AppId $sp.AppId -ObjectId $sp.ObjectId -DisplayName "prio365-mailSp-$i"
         Confirm-RoleAssignments -AppId $sp.AppId -SpIdentity $identity -ScopeName $ScopeName -Roles $Roles
     }
 }
@@ -84,23 +97,45 @@ function Test-ScopeGate {
 
 function Invoke-Main {
     Connect-AzAccount -Identity | Out-Null
+    Write-Output "STEP: AzAccount connected"
+
     Connect-ExchangeOnline -ManagedIdentity -Organization $OrganizationDomain
+    Write-Output "STEP: ExchangeOnline connected (org=$OrganizationDomain)"
+
     try {
-        $sps   = ConvertFrom-Json -InputObject $ServicePrincipalsJson
+        $sps = ConvertFrom-Json -InputObject $ServicePrincipalsJson
+        $sps = @($sps)
+        if (-not $sps -or $sps.Count -eq 0) {
+            throw "ServicePrincipalsJson enthält keine Service Principals (nach ConvertFrom-Json leer)."
+        }
+        Write-Output "STEP: parsed $($sps.Count) service principal(s)"
+
         $group = Confirm-ScopeGroup -Name $ScopeGroupName -Alias $ScopeGroupAlias
+        Write-Output "STEP: scope group ready (DN='$($group.DistinguishedName)')"
+
         Confirm-ManagementScope -Name $ScopeName -GroupDn $group.DistinguishedName
-        Invoke-SetupForServicePrincipals -ServicePrincipals @($sps) -Group $group -ScopeName $ScopeName -Roles $Roles
+        Write-Output "STEP: management scope ensured"
+
+        Invoke-SetupForServicePrincipals -ServicePrincipals $sps -Group $group -ScopeName $ScopeName -Roles $Roles
+        Write-Output "STEP: role assignments processed"
 
         $ready = $true
         if ($VerifyInScopeMailbox -and $VerifyOutOfScopeMailbox) {
-            foreach ($sp in @($sps)) {
+            foreach ($sp in $sps) {
                 if (-not (Test-ScopeGate -AppId $sp.AppId -InScopeMailbox $VerifyInScopeMailbox -OutOfScopeMailbox $VerifyOutOfScopeMailbox)) { $ready = $false }
             }
         }
         Write-Output "ScopeGroupEmail=$($group.PrimarySmtpAddress)"
         Write-Output "SCOPE_READY=$($ready.ToString().ToLower())"
     }
-    finally { Disconnect-ExchangeOnline -Confirm:$false }
+    catch {
+        # Genaue Fehlerstelle sichtbar machen (der Azure-"Ausnahme"-Tab zeigt sonst nur die Message).
+        Write-Error "FAILED: $($_.Exception.Message)"
+        Write-Error "AT: $($_.InvocationInfo.PositionMessage)"
+        Write-Error "STACK: $($_.ScriptStackTrace)"
+        throw
+    }
+    finally { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue }
 }
 
 # Guard: bei Pester-Dot-Source (InvocationName '.') NICHT ausführen
