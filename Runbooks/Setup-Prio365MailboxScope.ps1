@@ -104,21 +104,25 @@ function Invoke-Main {
         $exoCmd = Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue
         Write-Output "STEP: ExchangeOnlineManagement module = $($exoCmd.Source) v$($exoCmd.Version)"
 
-        # Diagnose des mutmaßlichen Az.Accounts-5.x-Breaking-Changes (Get-AzAccessToken -> SecureString),
-        # der Connect-ExchangeOnline -ManagedIdentity mit einer NRE brechen lässt.
         $azAcc = Get-Module Az.Accounts -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
         Write-Output "STEP: Az.Accounts v$($azAcc.Version)"
-        try {
-            $diagTok = Get-AzAccessToken -ResourceUrl 'https://outlook.office365.com' -ErrorAction Stop
-            Write-Output "STEP: Get-AzAccessToken ok, Token-Typ = $($diagTok.Token.GetType().Name)"
-        }
-        catch {
-            Write-Output "STEP: Get-AzAccessToken failed: $($_.Exception.Message)"
-        }
 
-        # Fail-fast: ein Versuch. Der Fehler wird vom äußeren catch mit Typ/InnerException geloggt,
-        # der Job endet sofort auf Failed (kein minutenlanges Retry, das den Backend-Timeout reißt).
-        Connect-ExchangeOnline -ManagedIdentity -Organization $OrganizationDomain -ShowBanner:$false
+        # Connect mit Retry: die MI-Token-Beschaffung für Exchange (outlook.office365.com) schlägt in
+        # Azure Automation gerne mit "A task was canceled" (IMDS-Timeout) fehl – v.a. beim ersten Request
+        # bzw. wenn die Exchange-Rolle der Managed Identity noch frisch/propagierend ist. Mehrere Versuche
+        # mit Backoff decken den transienten Fall ab; bleibt es dauerhaft, ist es ein echtes MI-Rechte-Problem.
+        $connected = $false
+        for ($attempt = 1; $attempt -le 4 -and -not $connected; $attempt++) {
+            try {
+                Connect-ExchangeOnline -ManagedIdentity -Organization $OrganizationDomain -ShowBanner:$false
+                $connected = $true
+            }
+            catch {
+                Write-Output "STEP: ExchangeOnline connect attempt $attempt failed: $($_.Exception.Message)"
+                if ($attempt -ge 4) { throw }
+                Start-Sleep -Seconds ($attempt * 10)
+            }
+        }
         Write-Output "STEP: ExchangeOnline connected (org=$OrganizationDomain)"
 
         $sps = ConvertFrom-Json -InputObject $ServicePrincipalsJson
