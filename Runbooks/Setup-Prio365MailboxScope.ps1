@@ -99,10 +99,27 @@ function Invoke-Main {
     Connect-AzAccount -Identity | Out-Null
     Write-Output "STEP: AzAccount connected"
 
-    Connect-ExchangeOnline -ManagedIdentity -Organization $OrganizationDomain
-    Write-Output "STEP: ExchangeOnline connected (org=$OrganizationDomain)"
-
     try {
+        Write-Output "STEP: OrganizationDomain='$OrganizationDomain' (Länge=$($OrganizationDomain.Length))"
+        $exoCmd = Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue
+        Write-Output "STEP: ExchangeOnlineManagement module = $($exoCmd.Source) v$($exoCmd.Version)"
+
+        # Connect mit Retry: die Exchange-Administrator-Rolle der Managed Identity kann nach dem
+        # Deployment noch nicht propagiert sein -> ein paar Versuche mit Backoff, bevor wir aufgeben.
+        $connected = $false
+        for ($attempt = 1; $attempt -le 5 -and -not $connected; $attempt++) {
+            try {
+                Connect-ExchangeOnline -ManagedIdentity -Organization $OrganizationDomain -ShowBanner:$false
+                $connected = $true
+            }
+            catch {
+                Write-Output "STEP: ExchangeOnline connect attempt $attempt failed: $($_.Exception.Message)"
+                if ($attempt -ge 5) { throw }
+                Start-Sleep -Seconds 20
+            }
+        }
+        Write-Output "STEP: ExchangeOnline connected (org=$OrganizationDomain)"
+
         $sps = ConvertFrom-Json -InputObject $ServicePrincipalsJson
         $sps = @($sps)
         if (-not $sps -or $sps.Count -eq 0) {
@@ -131,6 +148,8 @@ function Invoke-Main {
     catch {
         # Genaue Fehlerstelle sichtbar machen (der Azure-"Ausnahme"-Tab zeigt sonst nur die Message).
         Write-Error "FAILED: $($_.Exception.Message)"
+        Write-Error "TYPE: $($_.Exception.GetType().FullName)"
+        Write-Error "INNER: $($_.Exception.InnerException.Message)"
         Write-Error "AT: $($_.InvocationInfo.PositionMessage)"
         Write-Error "STACK: $($_.ScriptStackTrace)"
         throw
