@@ -95,6 +95,29 @@ function Test-ScopeGate {
     return ($inGranted -and -not $outGranted)
 }
 
+function Get-MiExchangeToken {
+    # Holt ein Managed-Identity-Token für Exchange Online DIREKT vom Automation-Identity-Endpoint
+    # (per REST), statt über Azure.Identity/Connect-ExchangeOnline -ManagedIdentity. Unter Windows
+    # PowerShell 5.1 scheitert der Azure.Identity-Pfad mit "A task was canceled"; dieser Weg umgeht
+    # das und bleibt damit auf der 5.1-Runtime nutzbar.
+    $resource = 'https://outlook.office365.com'
+    if ($env:IDENTITY_ENDPOINT -and $env:IDENTITY_HEADER) {
+        $uri     = "$($env:IDENTITY_ENDPOINT)?resource=$resource&api-version=2019-08-01"
+        $headers = @{ 'X-IDENTITY-HEADER' = $env:IDENTITY_HEADER }
+    }
+    elseif ($env:MSI_ENDPOINT) {
+        $uri     = "$($env:MSI_ENDPOINT)?resource=$resource&api-version=2017-09-01"
+        $headers = @{ 'Secret' = $env:MSI_SECRET }
+    }
+    else {
+        throw "Kein Managed-Identity-Endpoint (IDENTITY_ENDPOINT/MSI_ENDPOINT) in der Runbook-Umgebung gefunden."
+    }
+
+    $resp = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers -TimeoutSec 60
+    if (-not $resp.access_token) { throw "MI-Token-Antwort enthielt kein access_token." }
+    return $resp.access_token
+}
+
 function Invoke-Main {
     Connect-AzAccount -Identity | Out-Null
     Write-Output "STEP: AzAccount connected"
@@ -107,23 +130,13 @@ function Invoke-Main {
         $azAcc = Get-Module Az.Accounts -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
         Write-Output "STEP: Az.Accounts v$($azAcc.Version)"
 
-        # Connect mit Retry: die MI-Token-Beschaffung für Exchange (outlook.office365.com) schlägt in
-        # Azure Automation gerne mit "A task was canceled" (IMDS-Timeout) fehl – v.a. beim ersten Request
-        # bzw. wenn die Exchange-Rolle der Managed Identity noch frisch/propagierend ist. Mehrere Versuche
-        # mit Backoff decken den transienten Fall ab; bleibt es dauerhaft, ist es ein echtes MI-Rechte-Problem.
-        $connected = $false
-        for ($attempt = 1; $attempt -le 4 -and -not $connected; $attempt++) {
-            try {
-                Connect-ExchangeOnline -ManagedIdentity -Organization $OrganizationDomain -ShowBanner:$false
-                $connected = $true
-            }
-            catch {
-                Write-Output "STEP: ExchangeOnline connect attempt $attempt failed: $($_.Exception.Message)"
-                if ($attempt -ge 4) { throw }
-                Start-Sleep -Seconds ($attempt * 10)
-            }
-        }
-        Write-Output "STEP: ExchangeOnline connected (org=$OrganizationDomain)"
+        # Option A: MI-Token für Exchange selbst per IMDS holen (umgeht Azure.Identity, das unter 5.1
+        # mit "A task was canceled" scheitert) und via -AccessToken verbinden. Bleibt damit auf 5.1.
+        $exoToken = Get-MiExchangeToken
+        Write-Output "STEP: MI Exchange token acquired (Länge=$($exoToken.Length))"
+
+        Connect-ExchangeOnline -AccessToken $exoToken -Organization $OrganizationDomain -ShowBanner:$false
+        Write-Output "STEP: ExchangeOnline connected (org=$OrganizationDomain, via AccessToken)"
 
         $sps = ConvertFrom-Json -InputObject $ServicePrincipalsJson
         $sps = @($sps)
