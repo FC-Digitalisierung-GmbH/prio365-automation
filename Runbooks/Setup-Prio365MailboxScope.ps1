@@ -2,9 +2,6 @@ param
 (
     [Parameter(Mandatory = $true)]  [string] $ServicePrincipalsJson,
     [Parameter(Mandatory = $true)]  [string] $OrganizationDomain,
-    # Delegiertes Exchange-Online-Token des Admins (Audience https://outlook.office365.com).
-    # Ersetzt die Managed-Identity-Auth, die unter PowerShell 5.1 kein Exchange-Token bekommt.
-    [Parameter(Mandatory = $true)]  [string] $AdminAccessToken,
     [Parameter(Mandatory = $false)] [string] $VerifyInScopeMailbox,
     [Parameter(Mandatory = $false)] [string] $VerifyOutOfScopeMailbox
 )
@@ -99,19 +96,16 @@ function Test-ScopeGate {
 }
 
 function Invoke-Main {
+    Connect-AzAccount -Identity | Out-Null
+    Write-Output "STEP: AzAccount connected"
+
     try {
         Write-Output "STEP: OrganizationDomain='$OrganizationDomain' (Länge=$($OrganizationDomain.Length))"
-        $exoCmd = Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue
-        Write-Output "STEP: ExchangeOnlineManagement module = $($exoCmd.Source) v$($exoCmd.Version)"
 
-        if ([string]::IsNullOrWhiteSpace($AdminAccessToken)) {
-            throw "AdminAccessToken ist leer – ein delegiertes Exchange-Token des Admins ist erforderlich."
-        }
-
-        # Connect mit dem delegierten Admin-Token (Audience outlook.office365.com). Der Admin hat
-        # Exchange-Admin-Rechte -> funktioniert dort, wo die Managed Identity unter 5.1 scheitert.
-        Connect-ExchangeOnline -AccessToken $AdminAccessToken -Organization $OrganizationDomain -ShowBanner:$false
-        Write-Output "STEP: ExchangeOnline connected (org=$OrganizationDomain, via Admin AccessToken)"
+        # Auth über die System-Managed-Identity des Automation Accounts (setzt aktiven Exchange-SP +
+        # Exchange-Admin-Rolle der MI im Kunden-Tenant voraus).
+        Connect-ExchangeOnline -ManagedIdentity -Organization $OrganizationDomain -ShowBanner:$false
+        Write-Output "STEP: ExchangeOnline connected (org=$OrganizationDomain)"
 
         $sps = ConvertFrom-Json -InputObject $ServicePrincipalsJson
         $sps = @($sps)
