@@ -2,6 +2,9 @@ param
 (
     [Parameter(Mandatory = $true)]  [string] $ServicePrincipalsJson,
     [Parameter(Mandatory = $true)]  [string] $OrganizationDomain,
+    # Delegiertes Exchange-Online-Token des Admins (Audience https://outlook.office365.com).
+    # Ersetzt die Managed-Identity-Auth, die unter PowerShell 5.1 kein Exchange-Token bekommt.
+    [Parameter(Mandatory = $true)]  [string] $AdminAccessToken,
     [Parameter(Mandatory = $false)] [string] $VerifyInScopeMailbox,
     [Parameter(Mandatory = $false)] [string] $VerifyOutOfScopeMailbox
 )
@@ -95,48 +98,20 @@ function Test-ScopeGate {
     return ($inGranted -and -not $outGranted)
 }
 
-function Get-MiExchangeToken {
-    # Holt ein Managed-Identity-Token für Exchange Online DIREKT vom Automation-Identity-Endpoint
-    # (per REST), statt über Azure.Identity/Connect-ExchangeOnline -ManagedIdentity. Unter Windows
-    # PowerShell 5.1 scheitert der Azure.Identity-Pfad mit "A task was canceled"; dieser Weg umgeht
-    # das und bleibt damit auf der 5.1-Runtime nutzbar.
-    $resource = 'https://outlook.office365.com'
-    if ($env:IDENTITY_ENDPOINT -and $env:IDENTITY_HEADER) {
-        $uri     = "$($env:IDENTITY_ENDPOINT)?resource=$resource&api-version=2019-08-01"
-        $headers = @{ 'X-IDENTITY-HEADER' = $env:IDENTITY_HEADER }
-    }
-    elseif ($env:MSI_ENDPOINT) {
-        $uri     = "$($env:MSI_ENDPOINT)?resource=$resource&api-version=2017-09-01"
-        $headers = @{ 'Secret' = $env:MSI_SECRET }
-    }
-    else {
-        throw "Kein Managed-Identity-Endpoint (IDENTITY_ENDPOINT/MSI_ENDPOINT) in der Runbook-Umgebung gefunden."
-    }
-
-    $resp = Invoke-RestMethod -Method Get -Uri $uri -Headers $headers -TimeoutSec 60
-    if (-not $resp.access_token) { throw "MI-Token-Antwort enthielt kein access_token." }
-    return $resp.access_token
-}
-
 function Invoke-Main {
-    Connect-AzAccount -Identity | Out-Null
-    Write-Output "STEP: AzAccount connected"
-
     try {
         Write-Output "STEP: OrganizationDomain='$OrganizationDomain' (Länge=$($OrganizationDomain.Length))"
         $exoCmd = Get-Command Connect-ExchangeOnline -ErrorAction SilentlyContinue
         Write-Output "STEP: ExchangeOnlineManagement module = $($exoCmd.Source) v$($exoCmd.Version)"
 
-        $azAcc = Get-Module Az.Accounts -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1
-        Write-Output "STEP: Az.Accounts v$($azAcc.Version)"
+        if ([string]::IsNullOrWhiteSpace($AdminAccessToken)) {
+            throw "AdminAccessToken ist leer – ein delegiertes Exchange-Token des Admins ist erforderlich."
+        }
 
-        # Option A: MI-Token für Exchange selbst per IMDS holen (umgeht Azure.Identity, das unter 5.1
-        # mit "A task was canceled" scheitert) und via -AccessToken verbinden. Bleibt damit auf 5.1.
-        $exoToken = Get-MiExchangeToken
-        Write-Output "STEP: MI Exchange token acquired (Länge=$($exoToken.Length))"
-
-        Connect-ExchangeOnline -AccessToken $exoToken -Organization $OrganizationDomain -ShowBanner:$false
-        Write-Output "STEP: ExchangeOnline connected (org=$OrganizationDomain, via AccessToken)"
+        # Connect mit dem delegierten Admin-Token (Audience outlook.office365.com). Der Admin hat
+        # Exchange-Admin-Rechte -> funktioniert dort, wo die Managed Identity unter 5.1 scheitert.
+        Connect-ExchangeOnline -AccessToken $AdminAccessToken -Organization $OrganizationDomain -ShowBanner:$false
+        Write-Output "STEP: ExchangeOnline connected (org=$OrganizationDomain, via Admin AccessToken)"
 
         $sps = ConvertFrom-Json -InputObject $ServicePrincipalsJson
         $sps = @($sps)
